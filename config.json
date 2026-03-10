@@ -1,0 +1,17 @@
+{
+  "synochat_token": "evDvXktwhGmP",
+  "synochat_incoming_url": "https://192.168.5.78:219/webapi/entry.cgi?api=SYNO.Chat.External&method=incoming&version=2&token=TH9fYlrm50p5F",
+
+  "synas_base_url": "https://192.168.5.78:219",
+  "synas_user": "printer",
+  "synas_pass": "efl){r8R",
+
+  "printer_name": "80D",
+
+  "listen_host": "0.0.0.0",
+  "listen_port": 8765,
+
+  "max_file_mb": 500,
+  "bot_user_id": "7",
+  "confirm_timeout_sec":300
+}

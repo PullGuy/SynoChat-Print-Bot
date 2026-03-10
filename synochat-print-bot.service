@@ -1,0 +1,16 @@
+[Unit]
+Description=SynoChat Print Bot
+After=network.target cups.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/synochat-print-bot
+ExecStart=/usr/bin/python3 /opt/synochat-print-bot/server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
