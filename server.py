@@ -160,6 +160,28 @@ class PrintOptions:
             f"{duplex_map.get(self.duplex, self.duplex)} ｜ "
             f"{color_map.get(self.color, self.color)}"
         )
+    
+    def options_display(self) -> str:
+        duplex_map = {
+            "one-sided":            ("1", "单面"),
+            "two-sided-long-edge":  ("2", "双面长边"),
+            "two-sided-short-edge": ("3", "双面短边"),
+        }
+        orient_map = {
+            "portrait":  ("1", "纵向"),
+            "landscape": ("2", "横向"),
+        }
+        d_code, d_name = duplex_map.get(self.duplex, ("?", self.duplex))
+        o_code, o_name = orient_map.get(self.orient, ("?", self.orient))
+        color_name = "黑白" if self.color == "monochrome" else "彩色" if self.color == "color" else "自动"
+        code = f"{d_code}{o_code}"
+        return (
+            f"当前选项：{d_name} · {o_name} · {color_name} · {self.copies}份\n"
+            f"──────────────\n"
+            f"单双面打印：1单，2翻长边，3翻短边\n" 
+            f"打印方向：1纵向，2横向  份数：x2=2份"
+            f"色彩：2彩色，3黑白（默认）\n"
+        )
 
 
 # ── 简码解析 ──────────────────────────────────────────────────────────────────
@@ -234,6 +256,7 @@ class PendingJob:
     username:   str
     options:    PrintOptions
     created_at: float = field(default_factory=time.time)
+    pending_confirm: bool  = False
 
 _pending: dict = {}       # channel_id -> PendingJob
 _lock = threading.Lock()
@@ -367,12 +390,12 @@ def reply_chat(text: str, channel_id: str = None, user_id: str = None):
 
 
 # ─── 帮助文本 ─────────────────────────────────────────────────────────────────
-HELP_TEXT = """📖 **打印机器人使用说明**
+HELP_TEXT = """📖 打印机器人使用说明
 
-**① 发送文件**（PDF / JPG / PNG / TIFF / BMP）
+① 发送文件（PDF / JPG / PNG / TIFF / BMP）
 可在消息文字中附带打印选项：
 
-**② 打印选项简码**（位1·位2·位3）
+② 打印选项简码（位1·位2·位3）
 
 ```
 位1 双面  1=单面  2=双面翻长边  3=双面翻短边
@@ -389,7 +412,7 @@ HELP_TEXT = """📖 **打印机器人使用说明**
 
 也支持自然语言：双面、横向、黑白、彩色、3份
 
-**③ 确认暗号**
+③ 确认暗号
 收到文件后 Bot 会给你一个有趣的暗号
 → 回复暗号 ✅ 确认打印
 → 回复「取消」❌ 放弃打印
@@ -441,26 +464,70 @@ def handle_payload(payload: dict):
             return
 
         # 确认暗号
+        # 确认暗号 / 修改选项循环
         job_key = channel or user_id
         with _lock:
             job = _pending.get(job_key)
 
         if job:
-            if text.strip() == job.codeword:
+            tl2 = text.strip().lower()
+
+            # ── 取消 ──
+            if tl2 in ("取消", "cancel", "算了", "不打了", "no", "不要"):
                 with _lock:
                     _pending.pop(job_key, None)
+                _cleanup_job(job)
+                reply_chat(f"🚫 已取消「{job.file_name}」的打印任务", channel, user_id)
+                return
+
+            # ── 已解锁后：直接输入选项码修改 ──
+            if job.pending_confirm:
+                if tl2 in ("是", "确认", "yes", "ok", "好"):
+                    # 确认打印
+                    with _lock:
+                        _pending.pop(job_key, None)
+                    reply_chat(
+                        f"✅ 开始打印「{job.file_name}」\n📋 {job.options.options_display()}",
+                        channel, user_id,
+                    )
+                    job_name = print_file(job.file_path, job.options)
+                    _cleanup_job(job)
+                    if job_name:
+                        printer = f"「{PRINTER_NAME}」" if PRINTER_NAME else "默认打印机"
+                        reply_chat(f"🖨️ 已发送到{printer}，打印完成后会通知您～", channel, user_id)
+                        notify_when_done(job_name, channel, user_id)
+                    else:
+                        reply_chat("❌ 打印失败，请检查打印机状态", channel, user_id)
+                else:
+                    # 尝试解析为新选项
+                    new_options = parse_options(text)
+                    job.options = new_options
+                    job.created_at = time.time()
+                    reply_chat(
+                        f"📋 选项已更新\n"
+                        f"{new_options.options_display()}\n\n"
+                        f"回复「是」确认打印 ｜ 继续输入选项码修改 ｜ 回复「取消」放弃",
+                        channel, user_id,
+                    )
+                return
+
+            # ── 未解锁：需要先输入暗号 ──
+            parts = text.strip().split(None, 1)
+            codeword_input = parts[0] if parts else ""
+            option_input   = parts[1] if len(parts) > 1 else ""
+
+            if codeword_input == job.codeword:
+                job.pending_confirm = True
+                job.created_at = time.time()
+                if option_input:
+                    new_options = parse_options(option_input)
+                    job.options = new_options
                 reply_chat(
-                    f"✅ 暗号正确！开始打印「{job.file_name}」\n📋 {job.options.summary()}",
+                    f"🔓 暗号正确！\n\n"
+                    f"{job.options.options_display()}\n\n"
+                    f"回复「是」确认打印 ｜ 输入选项码修改 ｜ 回复「取消」放弃",
                     channel, user_id,
                 )
-                job_name = print_file(job.file_path, job.options)
-                _cleanup_job(job)
-                if job_name:
-                    printer = f"「{PRINTER_NAME}」" if PRINTER_NAME else "默认打印机"
-                    reply_chat(f"🖨️ 已发送到{printer}，打印完成后会通知您～", channel, user_id)
-                    notify_when_done(job_name, channel, user_id)
-                else:
-                    reply_chat("❌ 打印失败，请检查打印机状态（纸张/墨水/CUPS 服务）", channel, user_id)
             else:
                 hint = job.codeword[0]
                 reply_chat(
@@ -524,12 +591,12 @@ def handle_payload(payload: dict):
 
     expire_min = CONFIRM_TIMEOUT // 60
     reply_chat(
-        f"📋 **打印预览**\n"
+        f"📋 打印预览\n"
         f"文件：{file_name}\n"
         f"信息：{file_info}\n"
-        f"选项：{options.summary()}\n"
+        f"\n{options.options_display()}\n"
         f"\n"
-        f"🔑 确认打印，请回复暗号：**{codeword}**\n"
+        f"🔑 确认打印，请回复暗号：{codeword}\n"
         f"🚫 回复「取消」放弃 ｜ ⏰ {expire_min} 分钟内有效",
         channel, user_id,
     )
